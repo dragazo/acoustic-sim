@@ -12,7 +12,72 @@ import numpy as np
 import filter
 import tensorflow as tf
 
+from abc import ABC, abstractmethod
 from typing import Dict, Any
+
+class FilterMethod(ABC):
+    """
+    Abstract Base Class for any sample retention method.
+    It standardizes the process of initializing a method and using it to make a decision.
+    """
+    def __init__(self, **kwargs):
+        """Initializes the method with specific parameters."""
+        pass
+
+    @abstractmethod
+    def should_retain(self, audio_clip: np.ndarray) -> bool:
+        """
+        Processes a single audio clip and returns True if it should be retained, False otherwise.
+        This is the core method that every new algorithm must implement.
+        """
+        pass
+
+
+class VAEFilter(FilterMethod):
+    """
+    A filter method that uses a Variational Autoencoder (VAE) to determine whether to retain an audio sample.
+    It encodes the audio clip and checks if the encoded representation is within a certain threshold.
+    """
+    def __init__(self, max_clusters: int, max_weight: float, embedding_size: int, filter_thresh: float, quantized: bool, vote_thresh: float = 0.0, radius: int = 16, chunks: int = 4):
+        super().__init__()
+
+        self.vote_thresh = vote_thresh
+        self.radius = radius
+        self.chunks = chunks
+
+        if quantized:
+            device = 'cpu'
+            print(f'using tflite quantized model on device "{device}"\n')
+
+            self.encoder = TFLiteModel(model_path = 'model.tflite')
+        else:
+            self.device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
+            self.device = 'mps' if torch.backends.mps.is_available() else self.device
+
+            print(f'using standard model on device "{self.device}"\n')
+
+            self.encoder = vae.Encoder(embedding_size = embedding_size).to(self.device)
+            self.encoder.load_state_dict(torch.load('mfcc-8-untested-4/encoder-F16-A0.5-E256-L22.pt', weights_only = True, map_location = self.device))
+            self.encoder.eval()
+
+        self.filter = filter.ClusterFilter(max_clusters, max_weight, embedding_size, filter_thresh)
+
+    def should_retain(self, audio_clip: np.ndarray) -> bool:
+        """
+        Processes the input audio segment through the filter and returns whether the mean of the votes exceeds the defined threshold.
+        """
+
+        votes = []
+
+        chunk_size = dataloader.UNIFORM_SAMPLE_RATE * dataloader.SAMPLE_DURATION_SECS
+        for seg in energy_chunks(audio_clip, size = chunk_size, count = self.chunks, radius = self.radius):
+            with torch.no_grad():
+                spectrogram = mfcc.mfcc_spectrogram_for_learning(seg, dataloader.UNIFORM_SAMPLE_RATE)
+                mean, _ = self.encoder.forward(torch.tensor(spectrogram[np.newaxis,:], dtype = torch.float).to(self.device))
+                votes.append(self.filter.insert(mean.cpu().numpy().squeeze()))
+
+        return np.mean(votes) > self.vote_thresh
+
 
 # Set QUIET to True to suppress console output
 QUIET = False
@@ -239,21 +304,6 @@ if __name__ == '__main__':
     if args.seed is not None: random.seed(args.seed)
     globals()['QUIET'] = True
 
-    if args.quantized:
-        device = 'cpu'
-        print(f'using tflite quantized model on device "{device}"\n')
-
-        encoder = TFLiteModel(model_path = 'model.tflite')
-    else:
-        device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
-        device = 'mps' if torch.backends.mps.is_available() else device
-
-        print(f'using standard model on device "{device}"\n')
-
-        encoder = vae.Encoder(embedding_size = args.embedding_size).to(device)
-        encoder.load_state_dict(torch.load('mfcc-8-untested-4/encoder-F16-A0.5-E256-L22.pt', weights_only = True, map_location = device))
-        encoder.eval()
-
     qprint('loading sounds...')
     backgrounds = dict(sum((list(load_sounds(path, min_length = dataloader.SAMPLE_DURATION_SECS, mult_length = dataloader.SAMPLE_DURATION_SECS, max_silence_ratio = args.max_silence_ratio).items()) for path in sorted(args.backgrounds)), start = []))
     events = dict(sum((list(load_sounds(path, max_length = args.clip_duration, max_silence_ratio = args.max_silence_ratio).items()) for path in sorted(args.events)), start = []))
@@ -305,28 +355,7 @@ if __name__ == '__main__':
     clip_len = dataloader.UNIFORM_SAMPLE_RATE * args.clip_duration
     
     for i in range(args.iterations):
-        f = filter.ClusterFilter(args.max_clusters, args.max_weight, args.embedding_size, args.filter_thresh)
-
-        def vote_retain(x: np.ndarray) -> bool:
-            """
-            Processes the input audio segment `x` through the filter and returns whether the mean of the votes exceeds the defined threshold.
-            """
-
-            votes = []
-
-            chunk_size = dataloader.UNIFORM_SAMPLE_RATE * dataloader.SAMPLE_DURATION_SECS
-            for seg in energy_chunks(x, size = chunk_size, count = args.chunks, radius = args.radius):
-                with torch.no_grad():
-                    spectrogram = mfcc.mfcc_spectrogram_for_learning(seg, dataloader.UNIFORM_SAMPLE_RATE)
-                    mean, _ = encoder.forward(torch.tensor(spectrogram[np.newaxis,:], dtype = torch.float).to(device))
-                    votes.append(f.insert(mean.cpu().numpy().squeeze()))
-
-            return np.mean(votes) > args.vote_thresh
-
-        # def vote_retain(x: np.ndarray) -> bool:
-        #     # Test version that returns randomly True or False
-        #     return random.random() < 0.5
-
+        f = VAEFilter(max_clusters=args.max_clusters, max_weight=args.max_weight, embedding_size=args.embedding_size, filter_thresh=args.filter_thresh, quantized=args.quantized, vote_thresh=args.vote_thresh, radius=args.radius, chunks=args.chunks)
         for _ in range(args.clips):
             # Select a random background class if not set or based on the background change probability
             if background_class is None or random.random() < args.bg_change_prob:
@@ -351,7 +380,7 @@ if __name__ == '__main__':
             if args.audio_out is not None: clips.append(clip)
             input_events[event_class] += 1
             # Apply the filter to the audio clip
-            if vote_retain(clip): output_events[event_class] += 1
+            if f.should_retain(clip): output_events[event_class] += 1
 
         # Write the audio clip to file if specified
         if args.audio_out is not None:
