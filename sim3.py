@@ -11,6 +11,9 @@ import mfcc_vae_8 as vae
 import mfcc
 import numpy as np
 import filter
+import filter2
+# Default cluster filter method; overridden in main based on args.cluster_method
+CLUSTER_METHOD = 'filter'
 import tensorflow as tf
 
 from abc import ABC, abstractmethod
@@ -61,7 +64,11 @@ class VAEFilter(FilterMethod):
             self.encoder.load_state_dict(torch.load('mfcc-8-untested-4/encoder-F16-A0.5-E256-L22.pt', weights_only = True, map_location = self.device))
             self.encoder.eval()
 
-        self.filter = filter.ClusterFilter(max_clusters, max_weight, embedding_size, filter_thresh)
+        # choose cluster filter implementation
+        if CLUSTER_METHOD == 'filter2':
+            self.filter = filter2.ClusterFilter2(max_clusters, max_weight, embedding_size, filter_thresh)
+        else:
+            self.filter = filter.ClusterFilter(max_clusters, max_weight, embedding_size, filter_thresh)
 
     def should_retain(self, audio_clip: np.ndarray) -> bool:
         """
@@ -95,7 +102,11 @@ class SpectralFilter(FilterMethod):
         super().__init__()
         self.encoder = SpectralEncoder(sample_rate = dataloader.UNIFORM_SAMPLE_RATE)
         embedding_size = len(self.encoder.forward(np.zeros((clip_len,))))
-        self.filter = filter.ClusterFilter(max_clusters, max_weight, embedding_size, filter_thresh)
+        # choose cluster filter implementation
+        if CLUSTER_METHOD == 'filter2':
+            self.filter = filter2.ClusterFilter2(max_clusters, max_weight, embedding_size, filter_thresh)
+        else:
+            self.filter = filter.ClusterFilter(max_clusters, max_weight, embedding_size, filter_thresh)
 
     def should_retain(self, audio_clip: np.ndarray) -> bool:
         """
@@ -120,7 +131,11 @@ class RMSZCFilter(FilterMethod):
 
         self.encoder = RMSZCEncoder(sample_rate = dataloader.UNIFORM_SAMPLE_RATE)
         embedding_size = len(self.encoder.forward(np.zeros((clip_len,))))
-        self.filter = filter.ClusterFilter(max_clusters, max_weight, embedding_size, filter_thresh)
+        # choose cluster filter implementation
+        if CLUSTER_METHOD == 'filter2':
+            self.filter = filter2.ClusterFilter2(max_clusters, max_weight, embedding_size, filter_thresh)
+        else:
+            self.filter = filter.ClusterFilter(max_clusters, max_weight, embedding_size, filter_thresh)
 
     def should_retain(self, audio_clip: np.ndarray) -> bool:
         """
@@ -348,7 +363,10 @@ if __name__ == '__main__':
     parser.add_argument('--quantized', action = 'store_true')
     parser.add_argument('--quiet', action = 'store_true')
     parser.add_argument('--filter', type = str, choices = ['vae', 'spectral', 'rmszc'], default = 'vae')
+    parser.add_argument('--cluster_method', type = str, choices = ['filter', 'filter2'], default = 'filter')
     args = parser.parse_args()
+    # Set cluster filter method based on CLI argument
+    CLUSTER_METHOD = args.cluster_method
 
     assert args.iterations >= 1
     if args.seed is not None: random.seed(args.seed)
