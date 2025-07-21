@@ -5,14 +5,24 @@ import re
 import os
 import sys
 
+# From, e.g. "Frog:  2295 ->   712 ( 31.0%)", this regex extracts:
+# - Class name: "Frog"
+# - Original count: 2295
+# - Filtered count: 712
 DATA_REGEX = re.compile(r'^\s*(.*):\s*(\d+)\s*->\s*(\d+)')
+
 def read_file(path: str) -> Optional[np.ndarray]:
     try:
         with open(path, 'r') as f:
             data = f.readlines()
+        
+        # Extract data using regex
         data = [DATA_REGEX.search(x) for x in data]
         data = {x.group(1): [int(x.group(2)), int(x.group(3))] for x in data if x is not None}
+
+        # Remove the 'None' class
         del data['None']
+
         return np.array(list(data.values()))
     except Exception as e:
         return None
@@ -30,18 +40,21 @@ if __name__ == '__main__':
 
     data = []
     for x in os.listdir(args.path):
-        p = f'{args.path}/{x}'
-        y = read_file(p)
+        filename = f'{args.path}/{x}'
+        y = read_file(filename)
         if y is not None:
             data.append([x, metric(y)])
         elif args.purge:
-            os.remove(p)
+            os.remove(filename)
         else:
-            print(f'corrupted data: {p}', file = sys.stderr)
+            print(f'corrupted data: {filename}', file = sys.stderr)
             sys.exit(1)
 
+    # Sort data by metric value
     data = [[x, metric(read_file(f'{args.path}/{x}'))] for x in os.listdir(args.path)]
     data.sort(key = lambda x: -x[1])
+
+    # Print the top N results
     for x in data[:min(len(data), args.n)]:
         print(x)
         with open(f'{args.path}/{x[0]}', 'r') as f: print(f.read())
