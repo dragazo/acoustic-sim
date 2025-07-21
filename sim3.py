@@ -1,4 +1,5 @@
 import argparse
+from json import encoder
 import librosa
 import dataloader
 import random
@@ -13,7 +14,7 @@ import filter
 import tensorflow as tf
 
 from abc import ABC, abstractmethod
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 class FilterMethod(ABC):
     """
@@ -78,6 +79,54 @@ class VAEFilter(FilterMethod):
 
         return np.mean(votes) > self.vote_thresh
 
+class SpectralEncoder:
+    def __init__(self, *, fft_size: Optional[int] = None, sample_rate: int):
+        self.sample_rate = sample_rate
+        self.fft_size = fft_size if fft_size is not None else int(30 / 1000 * sample_rate)
+    def forward(self, x: np.ndarray) -> np.ndarray:
+        return np.abs(np.mean(mfcc.spectrogram(x, fft_size = self.fft_size, sample_rate = self.sample_rate), axis = 0))
+
+class SpectralFilter(FilterMethod):
+    """
+    A filter method that uses spectral features to determine whether to retain an audio sample.
+    It computes the mean and variance of the spectrogram and checks if they are within certain thresholds.
+    """
+    def __init__(self, max_clusters: int, max_weight: float, filter_thresh: float, clip_len: int):
+        super().__init__()
+        self.encoder = SpectralEncoder(sample_rate = dataloader.UNIFORM_SAMPLE_RATE)
+        embedding_size = len(self.encoder.forward(np.zeros((clip_len,))))
+        self.filter = filter.ClusterFilter(max_clusters, max_weight, embedding_size, filter_thresh)
+
+    def should_retain(self, audio_clip: np.ndarray) -> bool:
+        """
+        Processes the input audio segment and returns whether it should be retained based on spectral features.
+        """
+        return self.filter.insert(self.encoder.forward(audio_clip))
+
+class RMSZCEncoder:
+    def __init__(self, *, sample_rate: int):
+        self.sample_rate = sample_rate
+    def forward(self, x: np.ndarray) -> np.ndarray:
+        raw = np.array([np.mean(librosa.feature.rms(y = x)), np.mean(librosa.feature.zero_crossing_rate(x))])
+        return (raw - np.array([0.12521662, 0.03039862])) / np.array([0.14202671, 0.05519523])
+
+class RMSZCFilter(FilterMethod):
+    """
+    A filter method that uses RMS and zero-crossing rate to determine whether to retain an audio sample.
+    It computes the RMS and zero-crossing rate of the audio clip and checks if they are within certain thresholds.
+    """
+    def __init__(self, max_clusters: int, max_weight: float, filter_thresh: float, clip_len: int):
+        super().__init__()
+
+        self.encoder = RMSZCEncoder(sample_rate = dataloader.UNIFORM_SAMPLE_RATE)
+        embedding_size = len(self.encoder.forward(np.zeros((clip_len,))))
+        self.filter = filter.ClusterFilter(max_clusters, max_weight, embedding_size, filter_thresh)
+
+    def should_retain(self, audio_clip: np.ndarray) -> bool:
+        """
+        Processes the input audio segment and returns whether it should be retained based on RMS and zero-crossing rate.
+        """
+        return self.filter.insert(self.encoder.forward(audio_clip))
 
 # Set QUIET to True to suppress console output
 QUIET = False
@@ -298,6 +347,7 @@ if __name__ == '__main__':
     parser.add_argument('--embedding_size', type = int, default = 16)
     parser.add_argument('--quantized', action = 'store_true')
     parser.add_argument('--quiet', action = 'store_true')
+    parser.add_argument('--filter', type = str, choices = ['vae', 'spectral', 'rmszc'], default = 'vae')
     args = parser.parse_args()
 
     assert args.iterations >= 1
@@ -355,7 +405,16 @@ if __name__ == '__main__':
     clip_len = dataloader.UNIFORM_SAMPLE_RATE * args.clip_duration
     
     for i in range(args.iterations):
-        f = VAEFilter(max_clusters=args.max_clusters, max_weight=args.max_weight, embedding_size=args.embedding_size, filter_thresh=args.filter_thresh, quantized=args.quantized, vote_thresh=args.vote_thresh, radius=args.radius, chunks=args.chunks)
+        # Initialize the filter
+        if args.filter == 'vae':
+            f = VAEFilter(max_clusters=args.max_clusters, max_weight=args.max_weight, embedding_size=args.embedding_size, filter_thresh=args.filter_thresh, quantized=args.quantized, vote_thresh=args.vote_thresh, radius=args.radius, chunks=args.chunks)
+        elif args.filter == 'spectral':
+            f = SpectralFilter(max_clusters=args.max_clusters, max_weight=args.max_weight, filter_thresh=args.filter_thresh, clip_len=clip_len)
+        elif args.filter == 'rmszc':
+            f = RMSZCFilter(max_clusters=args.max_clusters, max_weight=args.max_weight, filter_thresh=args.filter_thresh, clip_len=clip_len)
+        else:
+            raise ValueError(f'Unknown filter type: {args.filter}')
+        
         for _ in range(args.clips):
             # Select a random background class if not set or based on the background change probability
             if background_class is None or random.random() < args.bg_change_prob:
