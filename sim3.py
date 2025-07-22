@@ -155,11 +155,11 @@ class CLAPEncoder:
         """
         Forward pass through the CLAP model.
         """
-        inputs = self.processor(audios=x, return_tensors="pt", sampling_rate=sample_rate).to(0)
+        inputs = self.processor(audios=[x], return_tensors="pt", sampling_rate=sample_rate, padding=True).to(0)
         audio_embed = self.model.get_audio_features(**inputs)
         audio_embed = audio_embed.cpu().detach().numpy()
         # Flatten to 1D (512,) to match other encoders
-        return audio_embed.flatten()
+        return audio_embed.squeeze()
 
  
 class CLAPFilter(FilterMethod):
