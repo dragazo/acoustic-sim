@@ -16,7 +16,7 @@ class ClusterFilter2:
         self.max_weight = max_weight
         self.max_clusters = max_clusters
         self.base_radius = thresh
-        self.MAX_STALENESS = 1000
+        self.MAX_STALENESS = 10000
         self.staleness.fill(self.MAX_STALENESS)  # Initialize staleness to a high value
 
     def insert(self, mean: np.ndarray) -> bool:
@@ -29,6 +29,7 @@ class ClusterFilter2:
 
         # increment staleness for all clusters
         self.staleness += 1
+        self.staleness = np.minimum(self.staleness, self.MAX_STALENESS)  # cap staleness to MAX_STALENESS
 
         if np.any(close):
             # If the mean is close to existing clusters, update those clusters and merge them
