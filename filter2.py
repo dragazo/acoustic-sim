@@ -1,5 +1,4 @@
 import numpy as np
-import typing
 
 class ClusterFilter2:
     def __init__(self, max_clusters: int, max_weight: int, embedding_size: int, thresh: float):
@@ -17,13 +16,15 @@ class ClusterFilter2:
         self.max_weight = max_weight
         self.max_clusters = max_clusters
         self.base_radius = thresh
+        self.MAX_STALENESS = 1000
+        self.staleness.fill(self.MAX_STALENESS)  # Initialize staleness to a high value
 
     def insert(self, mean: np.ndarray) -> bool:
         mean = np.array(mean)
 
         assert mean.shape == self.means.shape[1:] and self.means.shape[0] == self.max_clusters and self.weights.shape == (self.max_clusters,)
-        
-        l2_norm = np.sqrt(np.sum((self.means - mean) ** 2, axis = 1))
+
+        l2_norm = np.linalg.norm(self.means - mean, axis=1)
         close = l2_norm <= np.sqrt(self.weights) * self.base_radius
 
         # increment staleness for all clusters
@@ -49,7 +50,7 @@ class ClusterFilter2:
                 for idx in close_indices[1:]:
                     self.means[idx] = np.zeros_like(self.means[idx])
                     self.weights[idx] = 0
-                    self.staleness[idx] = 0
+                    self.staleness[idx] = self.MAX_STALENESS  # mark as very stale so new clusters will overwrite these first
 
             return False
         else:
