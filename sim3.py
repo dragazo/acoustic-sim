@@ -1,5 +1,6 @@
 import argparse
 from json import encoder
+from xml.parsers.expat import model
 import librosa
 import dataloader
 import random
@@ -10,8 +11,17 @@ import soundfile
 import mfcc_vae_8 as vae
 import mfcc
 import numpy as np
+
 import filter
 import filter2
+
+# Helper to select cluster filter implementation
+def make_cluster_filter(max_clusters, max_weight, embedding_size, filter_thresh):
+    if CLUSTER_METHOD == 'filter2':
+        return filter2.ClusterFilter2(max_clusters, max_weight, embedding_size, filter_thresh)
+    else:
+        return filter.ClusterFilter(max_clusters, max_weight, embedding_size, filter_thresh)
+
 # Default cluster filter method; overridden in main based on args.cluster_method
 CLUSTER_METHOD = 'filter'
 import tensorflow as tf
@@ -65,10 +75,7 @@ class VAEFilter(FilterMethod):
             self.encoder.eval()
 
         # choose cluster filter implementation
-        if CLUSTER_METHOD == 'filter2':
-            self.filter = filter2.ClusterFilter2(max_clusters, max_weight, embedding_size, filter_thresh)
-        else:
-            self.filter = filter.ClusterFilter(max_clusters, max_weight, embedding_size, filter_thresh)
+        self.filter = make_cluster_filter(max_clusters, max_weight, embedding_size, filter_thresh)
 
     def should_retain(self, audio_clip: np.ndarray) -> bool:
         """
@@ -103,10 +110,7 @@ class SpectralFilter(FilterMethod):
         self.encoder = SpectralEncoder(sample_rate = dataloader.UNIFORM_SAMPLE_RATE)
         embedding_size = len(self.encoder.forward(np.zeros((clip_len,))))
         # choose cluster filter implementation
-        if CLUSTER_METHOD == 'filter2':
-            self.filter = filter2.ClusterFilter2(max_clusters, max_weight, embedding_size, filter_thresh)
-        else:
-            self.filter = filter.ClusterFilter(max_clusters, max_weight, embedding_size, filter_thresh)
+        self.filter = make_cluster_filter(max_clusters, max_weight, embedding_size, filter_thresh)
 
     def should_retain(self, audio_clip: np.ndarray) -> bool:
         """
@@ -132,10 +136,7 @@ class RMSZCFilter(FilterMethod):
         self.encoder = RMSZCEncoder(sample_rate = dataloader.UNIFORM_SAMPLE_RATE)
         embedding_size = len(self.encoder.forward(np.zeros((clip_len,))))
         # choose cluster filter implementation
-        if CLUSTER_METHOD == 'filter2':
-            self.filter = filter2.ClusterFilter2(max_clusters, max_weight, embedding_size, filter_thresh)
-        else:
-            self.filter = filter.ClusterFilter(max_clusters, max_weight, embedding_size, filter_thresh)
+        self.filter = make_cluster_filter(max_clusters, max_weight, embedding_size, filter_thresh)
 
     def should_retain(self, audio_clip: np.ndarray) -> bool:
         """
@@ -143,6 +144,41 @@ class RMSZCFilter(FilterMethod):
         """
         return self.filter.insert(self.encoder.forward(audio_clip))
 
+class CLAPEncoder:
+    def __init__(self):
+        from transformers import ClapModel, ClapProcessor
+
+        self.model = ClapModel.from_pretrained("laion/clap-htsat-unfused").to(0)
+        self.processor = ClapProcessor.from_pretrained("laion/clap-htsat-unfused")
+
+    def forward(self, x: np.ndarray, sample_rate: int) -> np.ndarray:
+        """
+        Forward pass through the CLAP model.
+        """
+        inputs = self.processor(audios=x, return_tensors="pt", sampling_rate=sample_rate).to(0)
+        audio_embed = self.model.get_audio_features(**inputs)
+        audio_embed = audio_embed.cpu().detach().numpy()
+        # Flatten to 1D (512,) to match other encoders
+        return audio_embed.flatten()
+
+ 
+class CLAPFilter(FilterMethod):
+    """
+    A filter method that uses the CLAP model to determine whether to retain an audio sample.
+    """
+    def __init__(self, max_clusters: int, max_weight: float, filter_thresh: float, clip_len: int, sample_rate: int):
+        super().__init__()
+        self.encoder = CLAPEncoder()
+        embedding_size = len(self.encoder.forward(np.zeros((clip_len,)), sample_rate))
+        self.sample_rate = sample_rate
+        # choose cluster filter implementation
+        self.filter = make_cluster_filter(max_clusters, max_weight, embedding_size, filter_thresh)
+
+    def should_retain(self, audio_clip: np.ndarray) -> bool:
+        """
+        Processes the input audio segment and returns whether it should be retained based on CLAP features.
+        """
+        return self.filter.insert(self.encoder.forward(audio_clip, sample_rate=self.sample_rate))
 # Set QUIET to True to suppress console output
 QUIET = False
 
@@ -151,26 +187,29 @@ def qprint(*args, **kwargs):
     if not QUIET:
         print(*args, **kwargs)
 
-def load_sounds(path: str, *, min_length: float = 0, max_length: float = math.inf, mult_length: float = None, max_silence_ratio: float = None) -> Dict[str, np.ndarray]:
+def load_sounds(path: str, *, min_length: float = 0, max_length: float = math.inf, mult_length: float = None, max_silence_ratio: float = None, sample_rate: int = None) -> Dict[str, np.ndarray]:
     """Loads audio files from a directory and filters them based on various criteria.
 
     Args:
-        path (str): _description_
-        min_length (float, optional): _description_. Defaults to 0.
-        max_length (float, optional): _description_. Defaults to math.inf.
-        mult_length (float, optional): _description_. Defaults to None.
-        max_silence_ratio (float, optional): _description_. Defaults to None.
+        path (str): Directory path.
+        min_length (float, optional): Minimum clip length in seconds.
+        max_length (float, optional): Maximum clip length in seconds.
+        mult_length (float, optional): Required multiple of length in seconds.
+        max_silence_ratio (float, optional): Maximum allowed silence ratio.
+        sample_rate (int, optional): Audio sample rate to load. Defaults to dataloader.UNIFORM_SAMPLE_RATE.
 
     Returns:
         Dict[str, np.ndarray]: A dictionary mapping class names to their audio clips.
     """
+    if sample_rate is None:
+        sample_rate = dataloader.UNIFORM_SAMPLE_RATE
     res = { cls: [] for cls in sorted(os.listdir(path)) }
 
     for cls, entries in res.items():
         for file in sorted(os.listdir(f'{path}/{cls}')):
-            clip, sr = librosa.load(f'{path}/{cls}/{file}', sr = dataloader.UNIFORM_SAMPLE_RATE)
+            clip, sr = librosa.load(f'{path}/{cls}/{file}', sr = sample_rate)
 
-            assert sr == dataloader.UNIFORM_SAMPLE_RATE, sr
+            assert sr == sample_rate, sr
             assert len(clip.shape) == 1, clip.shape
 
             if mult_length is not None:
@@ -362,7 +401,7 @@ if __name__ == '__main__':
     parser.add_argument('--embedding_size', type = int, default = 16)
     parser.add_argument('--quantized', action = 'store_true')
     parser.add_argument('--quiet', action = 'store_true')
-    parser.add_argument('--filter', type = str, choices = ['vae', 'spectral', 'rmszc'], default = 'vae')
+    parser.add_argument('--filter', type = str, choices = ['vae', 'spectral', 'rmszc', 'clap'], default = 'vae')
     parser.add_argument('--cluster_method', type = str, choices = ['filter', 'filter2'], default = 'filter')
     args = parser.parse_args()
     # Set cluster filter method based on CLI argument
@@ -388,7 +427,13 @@ if __name__ == '__main__':
 
     event_freqs = { k: v for k, v in event_freqs.items() if v > 0 }
 
-    if len(event_freqs) == 0: event_freqs = { x: 1 for x in events.keys() }
+    if len(event_freqs) == 0: 
+        qprint('No event frequencies specified, using test defaults.')
+        test_events = ['Cow', 'Sheep', 'Thunder', 'Aircraft', 'Rooster', 'Frog']
+        event_freqs = { x: 1 for x in test_events }
+
+        # Set a random event frequency to 8 times the default
+        event_freqs[random.choice(list(event_freqs.keys()))] = 8
 
     # Check for unknown event types
     for x in event_freqs.keys():
@@ -420,8 +465,15 @@ if __name__ == '__main__':
     input_events = { x: 0 for x in [None] + list(event_freqs.keys()) }
     output_events = input_events.copy()
     background_class = None
-    clip_len = dataloader.UNIFORM_SAMPLE_RATE * args.clip_duration
-    
+
+    # Choose sample rate for filter type
+    if args.filter == 'clap':
+        sample_rate = 48000
+    else:
+        sample_rate = dataloader.UNIFORM_SAMPLE_RATE
+
+    clip_len = int(sample_rate * args.clip_duration)
+
     for i in range(args.iterations):
         # Initialize the filter
         if args.filter == 'vae':
@@ -430,19 +482,21 @@ if __name__ == '__main__':
             f = SpectralFilter(max_clusters=args.max_clusters, max_weight=args.max_weight, filter_thresh=args.filter_thresh, clip_len=clip_len)
         elif args.filter == 'rmszc':
             f = RMSZCFilter(max_clusters=args.max_clusters, max_weight=args.max_weight, filter_thresh=args.filter_thresh, clip_len=clip_len)
+        elif args.filter == 'clap':
+            f = CLAPFilter(max_clusters=args.max_clusters, max_weight=args.max_weight, filter_thresh=args.filter_thresh, clip_len=clip_len, sample_rate=sample_rate)
         else:
             raise ValueError(f'Unknown filter type: {args.filter}')
-        
+
         for _ in range(args.clips):
             # Select a random background class if not set or based on the background change probability
             if background_class is None or random.random() < args.bg_change_prob:
                 background_class = random.choice(sorted(backgrounds.keys()))
-            
+
             # Select a random background clip
             background = random.choice(backgrounds[background_class])
             clip = np.tile(background, math.ceil(clip_len / len(background)))[:clip_len] # avoid random_contract to prevent transitions in inference chunks
             clip *= args.background_scale
-            
+
             assert clip.shape == (clip_len,), clip.shape
 
             event_class = None
@@ -450,7 +504,7 @@ if __name__ == '__main__':
             if random.random() < args.event_prob:
                 event_class = pick_event()
                 event = random.choice(events[event_class])
-                event = event * create_fade(len(event), fade_duration = args.fade_duration, sr = dataloader.UNIFORM_SAMPLE_RATE)
+                event = event * create_fade(len(event), fade_duration = args.fade_duration, sr = sample_rate)
                 event = random_contract(random_extend(event, clip_len), clip_len)
                 clip += event
 
@@ -461,8 +515,12 @@ if __name__ == '__main__':
 
         # Write the audio clip to file if specified
         if args.audio_out is not None:
-            p = args.audio_out if args.iterations == 1 else f'{args.audio_out[:args.audio_out.rfind(".")]}-{i}.{args.audio_out[args.audio_out.rfind(".")+1:]}'
-            soundfile.write(args.audio_out, np.concatenate(clips), samplerate = dataloader.UNIFORM_SAMPLE_RATE, format = args.audio_out[args.audio_out.rfind('.')+1:].upper())
+            if args.iterations == 1:
+                p = args.audio_out
+            else:
+                dot = args.audio_out.rfind('.')
+                p = f'{args.audio_out[:dot]}-{i}.{args.audio_out[dot+1:]}'
+            soundfile.write(p, np.concatenate(clips), samplerate=sample_rate, format=args.audio_out[args.audio_out.rfind('.')+1:].upper())
 
     # Print the results
     for event in sorted(input_events.keys(), key = lambda x: -input_events[x]):

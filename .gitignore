@@ -19,3 +19,4 @@ model.tflite
 zzz-filter-test-results-*/
 zzz-*-filter-tests-*/
 *-events/
+.DS_Store

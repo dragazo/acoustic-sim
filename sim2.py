@@ -145,6 +145,8 @@ if __name__ == '__main__':
         encoder = TFLiteModel(model_path = 'model.tflite')
     else:
         device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
+        device = 'mps' if torch.backends.mps.is_available() else device
+
         print(f'using standard model on device "{device}"\n')
 
         encoder = vae.Encoder(embedding_size = args.embedding_size).to(device)
@@ -160,7 +162,7 @@ if __name__ == '__main__':
         # encoder.load_state_dict(torch.load('mfcc-8-untested-1/encoder-F16-A0.9-E256-L28.pt', weights_only = True))
         # encoder.load_state_dict(torch.load('mfcc-8-untested-2/encoder-F16-A0.9-E256-L27.pt', weights_only = True))
         # encoder.load_state_dict(torch.load('mfcc-8-untested-3/encoder-F16-A0.8-E256-L28.pt', weights_only = True))
-        encoder.load_state_dict(torch.load('mfcc-8-untested-4/encoder-F16-A0.5-E256-L22.pt', weights_only = True))
+        encoder.load_state_dict(torch.load('mfcc-8-untested-4/encoder-F16-A0.5-E256-L22.pt', weights_only = True, map_location = device))
         encoder.eval()
 
     qprint('loading sounds...')
