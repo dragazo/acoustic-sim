@@ -12,13 +12,16 @@ DATASET_EVENT_DURATION_SECS = 2
 SAMPLE_DURATION_SECS = 1
 UNIFORM_SAMPLE_RATE = 8000 # 20000
 
-def load_dataset_file(path: str, *, sample_duration: int = SAMPLE_DURATION_SECS):
+def load_dataset_file(path: str, *, sample_duration: int = SAMPLE_DURATION_SECS, sample_rate: int = UNIFORM_SAMPLE_RATE):
     p = path.rfind('.')
     if p >= 0: path = path[:p]
 
     try:
         orig_samples, orig_sr = librosa.load(f'{path}.wav', sr = None)
-        new_samples = librosa.resample(orig_samples, orig_sr = orig_sr, target_sr = UNIFORM_SAMPLE_RATE)
+        if orig_sr != sample_rate:
+            new_samples = librosa.resample(orig_samples, orig_sr = orig_sr, target_sr = sample_rate)
+        else:
+            new_samples = orig_samples
     except Exception as e:
         print(f'failed to read {path}.wav', file = sys.stderr)
         raise e
@@ -31,14 +34,14 @@ def load_dataset_file(path: str, *, sample_duration: int = SAMPLE_DURATION_SECS)
                 vals = ['TRAIN', *vals]
             assert len(vals) == 3
             if vals[2].lower() == 'ignore': continue
-            vals[1] = round(int(vals[1]) * (UNIFORM_SAMPLE_RATE / orig_sr))
+            vals[1] = round(int(vals[1]) * (sample_rate / orig_sr))
             raw_events.append(vals)
     raw_events.sort(key = lambda x: x[1])
 
     res = []
     t = 0
-    dt = round(sample_duration * UNIFORM_SAMPLE_RATE)
-    edt = round(DATASET_EVENT_DURATION_SECS * UNIFORM_SAMPLE_RATE)
+    dt = round(sample_duration * sample_rate)
+    edt = round(DATASET_EVENT_DURATION_SECS * sample_rate)
     while True:
         if t + dt > new_samples.shape[0]: break
         label = 'BackgroundSounds'
@@ -50,7 +53,7 @@ def load_dataset_file(path: str, *, sample_duration: int = SAMPLE_DURATION_SECS)
         t += dt
     return res
 
-def get_dataset(max_files_per_class: Optional[int], max_events_per_class: Optional[int], *, sample_duration: int = SAMPLE_DURATION_SECS):
+def get_dataset(max_files_per_class: Optional[int], max_events_per_class: Optional[int], *, sample_duration: int = SAMPLE_DURATION_SECS, sample_rate: int = UNIFORM_SAMPLE_RATE):
     dataset = {}
     root = 'dataset-partial'
     for cls in os.listdir(root):
@@ -63,7 +66,7 @@ def get_dataset(max_files_per_class: Optional[int], max_events_per_class: Option
         for i, file in enumerate(files):
             if max_files_per_class is not None and i >= max_files_per_class: break
             sub_dataset = {}
-            for label, data in load_dataset_file(file, sample_duration = sample_duration):
+            for label, data in load_dataset_file(file, sample_duration = sample_duration, sample_rate = sample_rate):
                 if label not in sub_dataset:
                     sub_dataset[label] = []
                 sub_dataset[label].append(data)
@@ -101,7 +104,18 @@ def get_dataset(max_files_per_class: Optional[int], max_events_per_class: Option
 #             dataset[k] = dataset[k][:max_events_per_class]
 #     return dataset
 
-def get_spectrogram_normalized(sample, *, any_channel = False):
+def get_spectrogram_normalized(sample, *, any_channel = False, sample_rate: int = UNIFORM_SAMPLE_RATE):
+    """
+    Compute a normalized spectrogram for a given audio sample.
+
+    Args:
+        sample (np.ndarray): Audio sample.
+        any_channel (bool): If True, randomly select a channel if multi-channel.
+        sample_rate (int): Sample rate of the audio.
+
+    Returns:
+        tuple: (spectrum, normalization parameters)
+    """
     if len(sample.shape) == 2 and any_channel:
         assert sample.shape[0] > 0
         sample = random.choice(sample)
@@ -115,7 +129,7 @@ def get_spectrogram_normalized(sample, *, any_channel = False):
         sample_scale = 1
     sample /= sample_scale
 
-    f, t, Sxx = sig.spectrogram(sample, UNIFORM_SAMPLE_RATE)
+    f, t, Sxx = sig.spectrogram(sample, sample_rate)
     spectrum = np.log10(np.maximum(Sxx, 1e-20))
     # spectrum = Sxx
 
