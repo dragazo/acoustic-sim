@@ -53,7 +53,7 @@ def load_dataset_file(path: str, *, sample_duration: int = SAMPLE_DURATION_SECS,
         t += dt
     return res
 
-def get_dataset(max_files_per_class: Optional[int], max_events_per_class: Optional[int], classes: Optional[list[str]], classes_strict: bool = False, *, sample_duration: int = SAMPLE_DURATION_SECS, sample_rate: int = UNIFORM_SAMPLE_RATE):
+def get_dataset(max_files_per_class: Optional[int], max_events_per_class: Optional[int], classes: Optional[list[str]] = None, classes_strict: bool = False, *, sample_duration: int = SAMPLE_DURATION_SECS, sample_rate: int = UNIFORM_SAMPLE_RATE):
     """
     Get a dataset of audio samples from the 'dataset-partial' directory.
 
