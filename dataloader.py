@@ -53,32 +53,65 @@ def load_dataset_file(path: str, *, sample_duration: int = SAMPLE_DURATION_SECS,
         t += dt
     return res
 
-def get_dataset(max_files_per_class: Optional[int], max_events_per_class: Optional[int], *, sample_duration: int = SAMPLE_DURATION_SECS, sample_rate: int = UNIFORM_SAMPLE_RATE):
+def get_dataset(max_files_per_class: Optional[int], max_events_per_class: Optional[int], classes: Optional[list[str]], classes_strict: bool = False, *, sample_duration: int = SAMPLE_DURATION_SECS, sample_rate: int = UNIFORM_SAMPLE_RATE):
+    """
+    Get a dataset of audio samples from the 'dataset-partial' directory.
+
+    Args:
+        max_files_per_class (Optional[int]): Maximum number of files to load per class.
+        max_events_per_class (Optional[int]): Maximum number of events to load per class.
+        classes (Optional[list[str]]): List of class labels to include. If None, all classes are included.
+        classes_strict (bool): If False, classes are filtered during loading, which is faster but may miss some samples.
+        sample_duration (int): Duration of each sample in seconds.
+        sample_rate (int): Sample rate for audio processing.
+
+    Returns:
+        dict: A dictionary where keys are class labels and values are lists of audio samples.
+    """
+
+    if not os.path.exists('dataset-partial'):
+        raise FileNotFoundError("The 'dataset-partial' directory does not exist. Please ensure the dataset is available.")
+
     dataset = {}
     root = 'dataset-partial'
+
     for cls in os.listdir(root):
+        if not classes_strict and classes is not None and cls not in classes:
+            continue
         files = []
         for dirpath, dirnames, filenames in os.walk(f'{root}/{cls}'):
             for filename in filenames:
                 if filename.endswith('.wav'):
                     files.append(f'{dirpath}/{filename}')
+        
         random.shuffle(files)
+
         for i, file in enumerate(files):
-            if max_files_per_class is not None and i >= max_files_per_class: break
+            if max_files_per_class is not None and i >= max_files_per_class: 
+                break
+
             sub_dataset = {}
+
             for label, data in load_dataset_file(file, sample_duration = sample_duration, sample_rate = sample_rate):
+                if classes is not None and label not in classes:
+                    continue
+
                 if label not in sub_dataset:
                     sub_dataset[label] = []
                 sub_dataset[label].append(data)
+
             for k, v in sub_dataset.items():
                 random.shuffle(v)
                 if k not in dataset:
                     dataset[k] = []
                 dataset[k].extend(v)
+
     for k in dataset.keys():
         random.shuffle(dataset[k])
+
         if max_events_per_class is not None and len(dataset[k]) > max_events_per_class:
             dataset[k] = dataset[k][:max_events_per_class]
+    
     return dataset
 
 # def get_dataset(max_files_per_class, max_events_per_class):

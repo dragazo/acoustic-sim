@@ -2,7 +2,7 @@ import numpy as np
 import typing
 
 class ClusterFilter:
-    def __init__(self, max_clusters: int, max_weight: int, embedding_size: int, thresh: float):
+    def __init__(self, max_clusters: int, max_weight: int, embedding_size: int, thresh: float, distance_metric: str = 'euclidean'):
         """
         Initializes the ClusterFilter with the given parameters.
 
@@ -16,14 +16,19 @@ class ClusterFilter:
         self.max_weight = max_weight
         self.max_clusters = max_clusters
         self.base_radius = thresh
+        self.distance_metric = distance_metric
 
     def insert(self, mean: np.ndarray) -> bool:
         mean = np.array(mean)
 
         assert mean.shape == self.means.shape[1:] and self.means.shape[0] == self.max_clusters and self.weights.shape == (self.max_clusters,)
-        
-        l2_norm = np.sqrt(np.sum((self.means - mean) ** 2, axis = 1))
-        close = l2_norm <= np.sqrt(self.weights) * self.base_radius
+
+        if self.distance_metric == 'euclidean':
+            distance = np.sqrt(np.sum((self.means - mean) ** 2, axis = 1))
+        elif self.distance_metric == 'cosine':
+            distance = 1 - np.sum(self.means * mean, axis=1) / (np.linalg.norm(self.means, axis=1) * np.linalg.norm(mean) + 1e-8)
+
+        close = distance <= np.sqrt(self.weights) * self.base_radius
 
         if np.any(close):
             # If the mean is close to an existing cluster, update that cluster

@@ -16,11 +16,14 @@ import filter
 import filter2
 
 # Helper to select cluster filter implementation
-def make_cluster_filter(max_clusters, max_weight, embedding_size, filter_thresh):
+def make_cluster_filter(max_clusters, max_weight, embedding_size, filter_thresh, distance_metric = 'euclidean'):
+    """
+    Factory function to create a cluster filter based on the specified method.
+    """
     if CLUSTER_METHOD == 'filter2':
-        return filter2.ClusterFilter2(max_clusters, max_weight, embedding_size, filter_thresh)
+        return filter2.ClusterFilter2(max_clusters, max_weight, embedding_size, filter_thresh, distance_metric)
     else:
-        return filter.ClusterFilter(max_clusters, max_weight, embedding_size, filter_thresh)
+        return filter.ClusterFilter(max_clusters, max_weight, embedding_size, filter_thresh, distance_metric)
 
 # Default cluster filter method; overridden in main based on args.cluster_method
 CLUSTER_METHOD = 'filter'
@@ -161,7 +164,6 @@ class CLAPEncoder:
         # Flatten to 1D (512,) to match other encoders
         return audio_embed.squeeze()
 
- 
 class CLAPFilter(FilterMethod):
     """
     A filter method that uses the CLAP model to determine whether to retain an audio sample.
@@ -172,13 +174,14 @@ class CLAPFilter(FilterMethod):
         embedding_size = len(self.encoder.forward(np.zeros((clip_len,)), sample_rate))
         self.sample_rate = sample_rate
         # choose cluster filter implementation
-        self.filter = make_cluster_filter(max_clusters, max_weight, embedding_size, filter_thresh)
+        self.filter = make_cluster_filter(max_clusters, max_weight, embedding_size, filter_thresh, distance_metric='cosine')
 
     def should_retain(self, audio_clip: np.ndarray) -> bool:
         """
         Processes the input audio segment and returns whether it should be retained based on CLAP features.
         """
         return self.filter.insert(self.encoder.forward(audio_clip, sample_rate=self.sample_rate))
+
 # Set QUIET to True to suppress console output
 QUIET = False
 
@@ -396,7 +399,7 @@ if __name__ == '__main__':
     parser.add_argument('--max-silence-ratio', type = float, default = 0.1)
     parser.add_argument('--radius', type = int, default = 16)
     parser.add_argument('--chunks', type = int, default = 4)
-    parser.add_argument('--background-scale', type = float, default = 1.0)
+    parser.add_argument('--background-scale', type = float, default = 0.0)
     parser.add_argument('--iterations', type = int, default = 1)
     parser.add_argument('--embedding_size', type = int, default = 16)
     parser.add_argument('--quantized', action = 'store_true')

@@ -1,7 +1,7 @@
 import numpy as np
 
 class ClusterFilter2:
-    def __init__(self, max_clusters: int, max_weight: int, embedding_size: int, thresh: float):
+    def __init__(self, max_clusters: int, max_weight: int, embedding_size: int, thresh: float, distance_metric: str = 'euclidean'):
         """
         Initializes the ClusterFilter with the given parameters.
 
@@ -9,6 +9,7 @@ class ClusterFilter2:
         :param max_weight: Maximum weight for a cluster.
         :param embedding_size: Size of the embedding for each cluster.
         :param thresh: Threshold for the distance to consider a point as part of a cluster.
+        :param distance_metric: Distance metric to use ('euclidean' or 'cosine').
         """
         self.means = np.zeros((max_clusters, embedding_size))
         self.weights = np.zeros((max_clusters,))
@@ -18,14 +19,19 @@ class ClusterFilter2:
         self.base_radius = thresh
         self.MAX_STALENESS = 10000
         self.staleness.fill(self.MAX_STALENESS)  # Initialize staleness to a high value
+        self.distance_metric = distance_metric
 
     def insert(self, mean: np.ndarray) -> bool:
         mean = np.array(mean)
 
         assert mean.shape == self.means.shape[1:] and self.means.shape[0] == self.max_clusters and self.weights.shape == (self.max_clusters,)
 
-        l2_norm = np.linalg.norm(self.means - mean, axis=1)
-        close = l2_norm <= np.sqrt(self.weights) * self.base_radius
+        if self.distance_metric == 'euclidean':
+            distance = np.linalg.norm(self.means - mean, axis=1)
+        elif self.distance_metric == 'cosine':
+            distance = 1 - np.sum(self.means * mean, axis=1) / (np.linalg.norm(self.means, axis=1) * np.linalg.norm(mean) + 1e-8)
+
+        close = distance <= np.sqrt(self.weights) * self.base_radius
 
         # increment staleness for all clusters
         self.staleness += 1
