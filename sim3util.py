@@ -8,10 +8,8 @@ import librosa
 import tensorflow as tf
 from typing import Dict
 
-# Set QUIET to True to suppress console output
-QUIET = False
-
 def qprint(*args, **kwargs):
+    QUIET = globals().get('QUIET', False)
     """Prints messages to the console unless QUIET is set to True."""
     if not QUIET:
         print(*args, **kwargs)

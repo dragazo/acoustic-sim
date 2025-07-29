@@ -8,7 +8,7 @@ import numpy as np
 from typing import Dict, List, Optional
 
 from sim3util import load_sounds, qprint, create_fade, random_extend, random_contract, energy_chunks, kl_divergence_uniform
-from sim3filters import VAEFilter, SpectralFilter, RMSZCFilter, CLAPFilter, make_cluster_filter
+import sim3filters
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -37,9 +37,7 @@ if __name__ == '__main__':
     parser.add_argument('--filter', type = str, choices = ['vae', 'spectral', 'rmszc', 'clap'], default = 'vae')
     parser.add_argument('--cluster_method', type = str, choices = ['filter', 'filter2'], default = 'filter')
     args = parser.parse_args()
-    # Set cluster filter method based on CLI argument
-    CLUSTER_METHOD = args.cluster_method
-
+    
     assert args.iterations >= 1
     if args.seed is not None: random.seed(args.seed)
     globals()['QUIET'] = True
@@ -108,15 +106,57 @@ if __name__ == '__main__':
     clip_len = int(sample_rate * args.clip_duration)
 
     for i in range(args.iterations):
-        # Initialize the filter
+        # Initialize the filter using the new factory function
         if args.filter == 'vae':
-            f = VAEFilter(max_clusters=args.max_clusters, max_weight=args.max_weight, embedding_size=args.embedding_size, filter_thresh=args.filter_thresh, quantized=args.quantized, vote_thresh=args.vote_thresh, radius=args.radius, chunks=args.chunks)
+            f = sim3filters.create_filter_method(
+                encoder_type='vae',
+                backend_type='voting' if args.vote_thresh > 0.0 else 'cluster',
+                embedding_size=args.embedding_size,
+                quantized=args.quantized,
+                chunks=args.chunks,
+                radius=args.radius,
+                max_clusters=args.max_clusters,
+                max_weight=args.max_weight,
+                filter_thresh=args.filter_thresh,
+                vote_thresh=args.vote_thresh,
+                clip_len=clip_len,
+                sample_rate=sample_rate,
+                cluster_method=args.cluster_method
+            )
         elif args.filter == 'spectral':
-            f = SpectralFilter(max_clusters=args.max_clusters, max_weight=args.max_weight, filter_thresh=args.filter_thresh, clip_len=clip_len)
+            f = sim3filters.create_filter_method(
+                encoder_type='spectral',
+                backend_type='cluster',
+                max_clusters=args.max_clusters,
+                max_weight=args.max_weight,
+                filter_thresh=args.filter_thresh,
+                clip_len=clip_len,
+                sample_rate=sample_rate,
+                cluster_method=args.cluster_method
+            )
         elif args.filter == 'rmszc':
-            f = RMSZCFilter(max_clusters=args.max_clusters, max_weight=args.max_weight, filter_thresh=args.filter_thresh, clip_len=clip_len)
+            f = sim3filters.create_filter_method(
+                encoder_type='rmszc',
+                backend_type='cluster',
+                max_clusters=args.max_clusters,
+                max_weight=args.max_weight,
+                filter_thresh=args.filter_thresh,
+                clip_len=clip_len,
+                sample_rate=sample_rate,
+                cluster_method=args.cluster_method
+            )
         elif args.filter == 'clap':
-            f = CLAPFilter(max_clusters=args.max_clusters, max_weight=args.max_weight, filter_thresh=args.filter_thresh, clip_len=clip_len, sample_rate=sample_rate)
+            f = sim3filters.create_filter_method(
+                encoder_type='clap',
+                backend_type='cluster',
+                max_clusters=args.max_clusters,
+                max_weight=args.max_weight,
+                filter_thresh=args.filter_thresh,
+                distance_metric='cosine',
+                clip_len=clip_len,
+                sample_rate=sample_rate,
+                cluster_method=args.cluster_method
+            )
         else:
             raise ValueError(f'Unknown filter type: {args.filter}')
 
@@ -162,3 +202,11 @@ if __name__ == '__main__':
     # Calculate and print the KL divergence
     kl_div = kl_divergence_uniform(output_events)
     print(f'KL divergence from uniform distribution: {kl_div:.4f}')
+
+    # Shannon Entropy
+    entropy = 0.0
+    for count in output_events.values():
+        if count > 0:
+            p = count / sum(output_events.values())
+            entropy -= p * np.log2(p)
+    print(f'Shannon Entropy: {entropy:.4f}')
