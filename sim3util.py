@@ -9,7 +9,7 @@ import tensorflow as tf
 from typing import Dict
 
 def qprint(*args, **kwargs):
-    QUIET = globals().get('QUIET', False)
+    QUIET = globals().get('QUIET', True)
     """Prints messages to the console unless QUIET is set to True."""
     if not QUIET:
         print(*args, **kwargs)
@@ -34,6 +34,10 @@ def load_sounds(path: str, *, min_length: float = 0, max_length: float = math.in
 
     for cls, entries in res.items():
         for file in sorted(os.listdir(f'{path}/{cls}')):
+            if not file.lower().endswith(('.wav', '.flac', '.mp3', '.ogg', '.aiff', '.aif', '.aifc')):
+                qprint(f'  omitting {path}/{cls}/{file} -- not a supported audio format')
+                continue
+            
             clip, sr = librosa.load(f'{path}/{cls}/{file}', sr = sample_rate)
 
             assert sr == sample_rate, sr

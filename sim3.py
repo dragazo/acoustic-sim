@@ -1,4 +1,6 @@
 import argparse
+import os
+import pickle
 import dataloader
 import random
 import math
@@ -34,68 +36,91 @@ if __name__ == '__main__':
     parser.add_argument('--embedding_size', type = int, default = 16)
     parser.add_argument('--quantized', action = 'store_true')
     parser.add_argument('--quiet', action = 'store_true')
+    parser.add_argument('--record', action = 'store_true')
+    parser.add_argument('--replay', action = 'store_true')
     parser.add_argument('--filter', type = str, choices = ['vae', 'spectral', 'rmszc', 'clap'], default = 'vae')
-    parser.add_argument('--cluster_method', type = str, choices = ['filter', 'filter2'], default = 'filter')
+    parser.add_argument('--cluster_method', type = str, choices = ['filter', 'filter2', 'lsh'], default = 'filter')
     args = parser.parse_args()
     
     assert args.iterations >= 1
     if args.seed is not None: random.seed(args.seed)
-    globals()['QUIET'] = True
+    globals().update({'QUIET': args.quiet})  # Update the global QUIET variable for qprint
 
-    qprint('loading sounds...')
-    backgrounds = dict(sum((list(load_sounds(path, min_length = dataloader.SAMPLE_DURATION_SECS, mult_length = dataloader.SAMPLE_DURATION_SECS, max_silence_ratio = args.max_silence_ratio).items()) for path in sorted(args.backgrounds)), start = []))
-    events = dict(sum((list(load_sounds(path, max_length = args.clip_duration, max_silence_ratio = args.max_silence_ratio).items()) for path in sorted(args.events)), start = []))
-    qprint('loading complete\n')
+    if not args.replay:
+        qprint('loading sounds...')
+        backgrounds = dict(sum((list(load_sounds(path, min_length = dataloader.SAMPLE_DURATION_SECS, mult_length = dataloader.SAMPLE_DURATION_SECS, max_silence_ratio = args.max_silence_ratio).items()) for path in sorted(args.backgrounds)), start = []))
+        events = dict(sum((list(load_sounds(path, max_length = args.clip_duration, max_silence_ratio = args.max_silence_ratio).items()) for path in sorted(args.events)), start = []))
+        qprint('loading complete\n')
 
-    qprint(f'backgrounds: {({ k: len(v) for k,v in backgrounds.items() })}')
-    qprint(f'events: {({ k: len(v) for k,v in events.items() })}\n')
+        qprint(f'backgrounds: {({ k: len(v) for k,v in backgrounds.items() })}')
+        qprint(f'events: {({ k: len(v) for k,v in events.items() })}\n')
 
-    # Set up event frequencies
-    event_freqs = { x[:x.index(':')]: float(x[x.index(':')+1:]) for x in args.event_freqs }
-    if '*' in event_freqs:
-        event_freqs = { **event_freqs, **{ x: event_freqs['*'] for x in events.keys() if x not in event_freqs } }
-        del event_freqs['*']
+        # Set up event frequencies
+        event_freqs = { x[:x.index(':')]: float(x[x.index(':')+1:]) for x in args.event_freqs }
+        if '*' in event_freqs:
+            event_freqs = { **event_freqs, **{ x: event_freqs['*'] for x in events.keys() if x not in event_freqs } }
+            del event_freqs['*']
 
-    event_freqs = { k: v for k, v in event_freqs.items() if v > 0 }
+        event_freqs = { k: v for k, v in event_freqs.items() if v > 0 }
 
-    if len(event_freqs) == 0: 
-        qprint('No event frequencies specified, using test defaults.')
-        test_events = ['Cow', 'Sheep', 'Thunder', 'Aircraft', 'Rooster', 'Frog']
-        event_freqs = { x: 1 for x in test_events }
+        if len(event_freqs) == 0: 
+            qprint('No event frequencies specified, using test defaults.')
+            test_events = ['Cow', 'Sheep', 'Thunder', 'Aircraft', 'Rooster', 'Frog']
+            event_freqs = { x: 1 for x in test_events }
 
-        # Set a random event frequency to 8 times the default
-        event_freqs[random.choice(list(event_freqs.keys()))] = 8
+            # Set a random event frequency to 8 times the default
+            event_freqs[random.choice(list(event_freqs.keys()))] = 8
 
-    # Check for unknown event types
-    for x in event_freqs.keys():
-        if x not in events:
-            raise RuntimeError(f'unknown event type: "{x}"')
+        # Check for unknown event types
+        for x in event_freqs.keys():
+            if x not in events:
+                raise RuntimeError(f'unknown event type: "{x}"')
 
-    print(f'event freqs: {event_freqs}\n')
+        print(f'event freqs: {event_freqs}\n')
 
-    def pick_event() -> str:
-        """
-        Randomly selects an event based on the defined frequencies.
-        """
+        def pick_event() -> str:
+            """
+            Randomly selects an event based on the defined frequencies.
+            """
 
-        t = sum(event_freqs.values())
-        r = random.random()
-        p = 0
-        e = None
-        for event, weight in event_freqs.items():
-            e = event
-            p += weight / t
-            if r < p: break
-        return e
+            t = sum(event_freqs.values())
+            r = random.random()
+            p = 0
+            e = None
+            for event, weight in event_freqs.items():
+                e = event
+                p += weight / t
+                if r < p: break
+            return e
 
-    # Filter out events that have no frequency defined
-    for x in [x for x in events.keys() if x not in event_freqs]:
-        del events[x]
+        # Filter out events that have no frequency defined
+        for x in [x for x in events.keys() if x not in event_freqs]:
+            del events[x]
 
     clips = []
-    input_events = { x: 0 for x in [None] + list(event_freqs.keys()) }
-    output_events = input_events.copy()
-    background_class = None
+    embeddings = []
+
+    if args.replay:
+        # Load embeddings from a file
+        file_name = 'embeddings.pkl'
+        if not os.path.exists(file_name):
+            raise RuntimeError(f'File {file_name} not found for replaying embeddings.')
+        with open(file_name, 'rb') as f:
+            embeddings = pickle.load(f)
+        qprint(f'Loaded {len(embeddings)} embeddings from {file_name} for replay.')
+
+        event_types = set(x[1] for x in embeddings if x[1] is not None)
+        input_events = { x: 0 for x in [None] + list(event_types) }
+        output_events = input_events.copy()
+        background_class = None
+
+        # Load input events from the embeddings
+        for embedding, event_class in embeddings:
+            input_events[event_class] += 1
+    else:
+        input_events = { x: 0 for x in [None] + list(event_freqs.keys()) }
+        output_events = input_events.copy()
+        background_class = None
 
     # Choose sample rate for filter type
     if args.filter == 'clap':
@@ -161,6 +186,13 @@ if __name__ == '__main__':
             raise ValueError(f'Unknown filter type: {args.filter}')
 
         for _ in range(args.clips):
+            if args.replay:
+                    # Use the pre-recorded embeddings
+                    embedding, event_class = embeddings.pop(0)
+                    #assert embedding.shape == (f.get_embedding_size(args.clip_duration, sample_rate),), f'Embedding shape mismatch: {embedding.shape} != ({args.embedding_size},)'
+                    retain = f.should_retain(None, sample_rate, embedding)
+                    if retain: output_events[event_class] += 1
+                    continue
             # Select a random background class if not set or based on the background change probability
             if background_class is None or random.random() < args.bg_change_prob:
                 background_class = random.choice(sorted(backgrounds.keys()))
@@ -183,8 +215,15 @@ if __name__ == '__main__':
 
             if args.audio_out is not None: clips.append(clip)
             input_events[event_class] += 1
-            # Apply the filter to the audio clip
-            if f.should_retain(clip): output_events[event_class] += 1
+
+            if args.record:
+                embedding = f.get_embedding(clip, sample_rate)
+                embeddings.append((embedding, event_class))
+            else:
+                # Apply the filter to the audio clip
+                retain = f.should_retain(clip, sample_rate)
+
+                if retain: output_events[event_class] += 1
 
         # Write the audio clip to file if specified
         if args.audio_out is not None:
@@ -194,6 +233,13 @@ if __name__ == '__main__':
                 dot = args.audio_out.rfind('.')
                 p = f'{args.audio_out[:dot]}-{i}.{args.audio_out[dot+1:]}'
             soundfile.write(p, np.concatenate(clips), samplerate=sample_rate, format=args.audio_out[args.audio_out.rfind('.')+1:].upper())
+
+        # Save the embeddings if recording
+        if args.record:
+            file_name = 'embeddings.pkl'
+            with open(file_name, 'wb') as f:
+                pickle.dump(embeddings, f)
+            qprint(f'Saved {len(embeddings)} embeddings to {file_name}.')
 
     # Print the results
     for event in sorted(input_events.keys(), key = lambda x: -input_events[x]):

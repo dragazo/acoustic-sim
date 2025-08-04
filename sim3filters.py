@@ -7,6 +7,7 @@ from typing import Optional, List
 
 import filter
 import filter2
+import filter_lsh
 import dataloader
 import mfcc
 import mfcc_vae_8 as vae
@@ -32,6 +33,8 @@ def make_cluster_filter(max_clusters: int, max_weight: float, embedding_size: in
         return filter2.ClusterFilter2(max_clusters, max_weight, embedding_size, filter_thresh, distance_metric)
     elif cluster_method == 'filter':
         return filter.ClusterFilter(max_clusters, max_weight, embedding_size, filter_thresh, distance_metric)
+    elif cluster_method == 'lsh':
+        return filter_lsh.LSHFilter(max_clusters, embedding_size)
     else:
         raise ValueError(f"Unknown cluster method: {cluster_method}")
 
@@ -102,7 +105,7 @@ class FilterMethod(ABC):
         self.encoder = encoder
         self.backend = backend
 
-    def should_retain(self, audio_clip: np.ndarray, sample_rate: int = None) -> bool:
+    def should_retain(self, audio_clip: Optional[np.ndarray], sample_rate: int = None, precomputed: Optional[np.ndarray] = None) -> bool:
         """
         Process an audio clip and decide whether to retain it.
         
@@ -113,11 +116,39 @@ class FilterMethod(ABC):
         Returns:
             True if sample should be retained, False otherwise
         """
+        assert audio_clip is not None or precomputed is not None, "Either audio_clip or precomputed embedding must be provided."
+
+        embedding = self.get_embedding(audio_clip, sample_rate) if audio_clip is not None else precomputed
+        return self.backend.should_retain(embedding)
+
+    def get_embedding_size(self, clip_len: int, sample_rate: int) -> int:
+        """
+        Get the size of the embedding vector for a given clip length.
+        
+        Args:
+            clip_len: Length of audio clip in samples
+            sample_rate: Sample rate of the audio
+            
+        Returns:
+            Size of the embedding vector
+        """
+        return self.encoder.get_embedding_size(clip_len, sample_rate)
+    
+    def get_embedding(self, audio_clip: np.ndarray, sample_rate: int = None) -> np.ndarray:
+        """
+        Get the embedding vector for an audio clip.
+        
+        Args:
+            audio_clip: Raw audio data
+            sample_rate: Sample rate (uses dataloader default if None)
+            
+        Returns:
+            Embedding vector as numpy array
+        """
         if sample_rate is None:
             sample_rate = dataloader.UNIFORM_SAMPLE_RATE
         
-        embedding = self.encoder.forward(audio_clip, sample_rate)
-        return self.backend.should_retain(embedding)
+        return self.encoder.forward(audio_clip, sample_rate)
 
 # ========== ENCODERS ==========
 
